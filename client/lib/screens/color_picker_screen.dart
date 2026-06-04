@@ -327,47 +327,28 @@ class _ColorWheelPainter extends CustomPainter {
 
   const _ColorWheelPainter({required this.hue, required this.saturation, required this.brightness});
 
-  @override
+@override
   void paint(Canvas canvas, Size size) {
     final cx = size.width / 2;
     final cy = size.height / 2;
     final center = Offset(cx, cy);
     final outerR = size.width / 2;
     final innerR = outerR * 0.54;
-    final ringMid = (outerR + innerR) / 2;
-    final ringWidth = outerR - innerR;
 
-final sweepPaint = Paint()
-      ..shader = SweepGradient(
-        center: Alignment.center,
-        startAngle: -math.pi / 2,
-        endAngle: 3 * math.pi / 2,
-        colors: const [
-          Color(0xFFFF0000), // hue 0° - Top (Red)
-          Color(0xFFFFFF00), // hue 60° - Top-right (Yellow)
-          Color(0xFF00FF00), // hue 120° - Right (Green)
-          Color(0xFF00FFFF), // hue 180° - Bottom-right (Cyan)
-          Color(0xFF0000FF), // hue 240° - Bottom (Blue)
-          Color(0xFFFF00FF), // hue 300° - Bottom-left (Magenta)
-          Color(0xFFFF0000), // hue 360° - Back to Top (Red)
-        ],
-      ).createShader(Rect.fromCircle(center: center, radius: outerR))
-      ..style = PaintingStyle.fill
-      ..isAntiAlias = true;
+    final paint = Paint()..style = PaintingStyle.fill;
+    for (int deg = 0; deg < 360; deg++) {
+      final rad = deg * math.pi / 180;
+      final start = rad;
+      final end = (deg + 1) * math.pi / 180;
+      final color = HSVColor.fromAHSV(1.0, deg.toDouble(), 1.0, 1.0).toColor();
+      paint.color = color;
 
-    canvas.save();
-    final ringPath = Path()
-      ..addOval(Rect.fromCircle(center: center, radius: outerR))
-      ..addOval(Rect.fromCircle(center: center, radius: innerR))
-      ..fillType = PathFillType.evenOdd;
-    canvas.clipPath(ringPath);
-    canvas.drawCircle(center, outerR, sweepPaint);
-    canvas.restore();
-
-    final holePaint = Paint()
-      ..color = const Color(0xFF2C2C2E)
-      ..blendMode = BlendMode.src;
-    canvas.drawCircle(center, innerR, holePaint);
+      final path = Path()
+        ..arcTo(Rect.fromCircle(center: center, radius: outerR), start, end - start, false)
+        ..arcTo(Rect.fromCircle(center: center, radius: innerR), end, start - end, false)
+        ..close();
+      canvas.drawPath(path, paint);
+    }
 
     final diamondR = innerR * 0.92;
     final half = diamondR / math.sqrt2;
@@ -376,7 +357,6 @@ final sweepPaint = Paint()
     canvas.save();
     canvas.translate(cx, cy);
     canvas.rotate(math.pi / 4);
-
     final rect = Rect.fromCenter(center: Offset.zero, width: half * 2, height: half * 2);
     canvas.drawRect(rect, Paint()..shader = LinearGradient(colors: [Colors.white, hueColor]).createShader(rect));
     canvas.drawRect(
@@ -385,7 +365,6 @@ final sweepPaint = Paint()
         ..shader = const LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black]).createShader(rect)
         ..blendMode = BlendMode.multiply,
     );
-
     canvas.restore();
 
     final normS = saturation / 100;
@@ -401,12 +380,13 @@ final sweepPaint = Paint()
     canvas.drawCircle(Offset(dotX, dotY), 9, Paint()..color = HSVColor.fromAHSV(1, hue, normS, normB).toColor());
     canvas.drawCircle(Offset(dotX, dotY), 9, Paint()..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 2.5);
 
+    final ringMid = (outerR + innerR) / 2;
     final hueAngle = (hue - 90) * math.pi / 180;
     final hueX = cx + ringMid * math.cos(hueAngle);
     final hueY = cy + ringMid * math.sin(hueAngle);
 
-    canvas.drawCircle(Offset(hueX, hueY), ringWidth / 2 + 2, Paint()..color = Colors.black38..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3));
-    canvas.drawCircle(Offset(hueX, hueY), ringWidth / 2, Paint()..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 2.5);
+    canvas.drawCircle(Offset(hueX, hueY), (outerR - innerR) / 2 + 2, Paint()..color = Colors.black38..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3));
+    canvas.drawCircle(Offset(hueX, hueY), (outerR - innerR) / 2, Paint()..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 2.5);
   }
 
   @override
