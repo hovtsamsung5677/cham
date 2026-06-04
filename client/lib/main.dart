@@ -106,8 +106,13 @@ class _AppMaterialApp extends StatelessWidget {
             );
           case '/editor':
             return AppTransitions.rotateScaleRoute(const EditorScreen());
-          case '/color_picker':
-            return AppTransitions.scaleRoute(const ColorPickerScreen());
+case '/color_picker':
+             return AppTransitions.scaleRoute(
+               ColorPickerScreen(
+                 initialColor: const Color(0xFF8B4513),
+                 onColorChanged: (color) {},
+               ),
+             );
           case '/color_palette':
             return AppTransitions.slideRoute(
               const ColorPaletteScreen(),

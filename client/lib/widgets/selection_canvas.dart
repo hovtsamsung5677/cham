@@ -1,7 +1,6 @@
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import '../models/selection_tool.dart';
 
 class SelectionCanvas extends StatefulWidget {
@@ -52,12 +51,10 @@ class SelectionCanvas extends StatefulWidget {
   State<SelectionCanvas> createState() => _SelectionCanvasState();
 }
 
-class _SelectionCanvasState extends State<SelectionCanvas>
-    with SingleTickerProviderStateMixin {
+class _SelectionCanvasState extends State<SelectionCanvas> with TickerProviderStateMixin {
   ui.Image? _decodedImage;
   Size _imageSize = const Size(800, 600);
 
-  // Zoom and pan state
   double _currentScale = 1.0;
   double _targetScale = 1.0;
   Offset _currentOffset = Offset.zero;
@@ -68,26 +65,38 @@ class _SelectionCanvasState extends State<SelectionCanvas>
   bool _isZooming = false;
   bool _isPanning = false;
 
-  // Ticker for smooth interpolation
-  Ticker? _zoomTicker;
-  static const double _smoothFactor = 0.2;
+  late AnimationController _selectionMaskController;
 
   @override
   void initState() {
     super.initState();
     _loadImage();
+    _selectionMaskController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+    );
+    _startSmoothZoomTicker();
+  }
 
-    _zoomTicker = createTicker((elapsed) {
+  @override
+  void didUpdateWidget(SelectionCanvas oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.selectionMask != oldWidget.selectionMask && widget.selectionMask.any((m) => m == 1)) {
+      _selectionMaskController.forward(from: 0);
+    }
+  }
+
+  void _startSmoothZoomTicker() {
+    createTicker((elapsed) {
       final scaleDiff = _targetScale - _currentScale;
       final offsetDiff = _targetOffset - _currentOffset;
 
       if (scaleDiff.abs() > 0.0001 || offsetDiff.distance > 0.01) {
         setState(() {
-          _currentScale += scaleDiff * _smoothFactor;
-          _currentOffset += offsetDiff * _smoothFactor;
+          _currentScale += scaleDiff * 0.15;
+          _currentOffset += offsetDiff * 0.15;
         });
-      } else if (_targetOffset != _currentOffset ||
-          _targetScale != _currentScale) {
+      } else if (_targetOffset != _currentOffset || _targetScale != _currentScale) {
         setState(() {
           _currentScale = _targetScale;
           _currentOffset = _targetOffset;
@@ -98,7 +107,7 @@ class _SelectionCanvasState extends State<SelectionCanvas>
 
   @override
   void dispose() {
-    _zoomTicker?.dispose();
+    _selectionMaskController.dispose();
     super.dispose();
   }
 
@@ -109,10 +118,7 @@ class _SelectionCanvasState extends State<SelectionCanvas>
       if (mounted) {
         setState(() {
           _decodedImage = frame.image;
-          _imageSize = Size(
-            frame.image.width.toDouble(),
-            frame.image.height.toDouble(),
-          );
+          _imageSize = Size(frame.image.width.toDouble(), frame.image.height.toDouble());
         });
       }
     } catch (e) {
@@ -144,6 +150,7 @@ class _SelectionCanvasState extends State<SelectionCanvas>
                     currentOffset: _currentOffset,
                     isZooming: _isZooming,
                     isPanning: _isPanning,
+                    maskAnimationValue: _selectionMaskController.value,
                   ),
                 ),
             ],
@@ -153,14 +160,8 @@ class _SelectionCanvasState extends State<SelectionCanvas>
     );
   }
 
-  // Преобразует экранные координаты в координаты изображения с учётом зума и панорамирования
-  Offset _screenToImageCoordinates(
-    Offset screenPosition,
-    BoxConstraints constraints,
-  ) {
+  Offset _screenToImageCoordinates(Offset screenPosition, BoxConstraints constraints) {
     final size = Size(constraints.maxWidth, constraints.maxHeight);
-
-    // Вычисляем размер изображения с сохранением пропорций
     final aspectRatio = _imageSize.width / _imageSize.height;
     double baseWidth, baseHeight;
 
@@ -172,48 +173,27 @@ class _SelectionCanvasState extends State<SelectionCanvas>
       baseHeight = baseWidth / aspectRatio;
     }
 
-    // Центр экрана
     final centerX = size.width / 2;
     final centerY = size.height / 2;
-
-    // Смещение изображения относительно центра
     final baseOffsetX = centerX - baseWidth / 2;
     final baseOffsetY = centerY - baseHeight / 2;
 
-    // Размер видимой части изображения при текущем зуме
     final srcWidth = _imageSize.width / _currentScale;
     final srcHeight = _imageSize.height / _currentScale;
 
-    // Координаты видимой области (как в _SelectionCanvasPainter)
     final pixelsPerImageX = srcWidth / baseWidth;
     final pixelsPerImageY = srcHeight / baseHeight;
 
-    // Вычисляем координаты начала видимой области (с учётом панорамирования)
-    // Формула должна совпадать с paint() в _SelectionCanvasPainter
-    final srcX =
-        ((_imageSize.width - srcWidth) / 2 -
-                _currentOffset.dx * pixelsPerImageX)
-            .clamp(0.0, _imageSize.width - srcWidth);
-    final srcY =
-        ((_imageSize.height - srcHeight) / 2 -
-                _currentOffset.dy * pixelsPerImageY)
-            .clamp(0.0, _imageSize.height - srcHeight);
+    final srcX = ((_imageSize.width - srcWidth) / 2 - _currentOffset.dx * pixelsPerImageX).clamp(0.0, _imageSize.width - srcWidth);
+    final srcY = ((_imageSize.height - srcHeight) / 2 - _currentOffset.dy * pixelsPerImageY).clamp(0.0, _imageSize.height - srcHeight);
 
-    // Конвертируем экранные координаты в координаты исходного изображения
-    final imageX =
-        srcX + (screenPosition.dx - baseOffsetX) / baseWidth * srcWidth;
-    final imageY =
-        srcY + (screenPosition.dy - baseOffsetY) / baseHeight * srcHeight;
+    final imageX = (srcX + (screenPosition.dx - baseOffsetX) / baseWidth * srcWidth).clamp(0.0, _imageSize.width.toDouble());
+    final imageY = (srcY + (screenPosition.dy - baseOffsetY) / baseHeight * srcHeight).clamp(0.0, _imageSize.height.toDouble());
 
-    return Offset(
-      imageX.clamp(0, _imageSize.width),
-      imageY.clamp(0, _imageSize.height),
-    );
+    return Offset(imageX.toDouble(), imageY.toDouble());
   }
 
   void _onTap(Offset position, BoxConstraints constraints) {
-    // В режиме автосегментации только - преобразуем координаты и вызываем callback
-    // Координаты преобразуются с учётом зума и панорамирования
     if (widget.currentTool == SelectionTool.interactiveSegmentation &&
         widget.isSegmentationModeActive &&
         widget.onAutoSegmentTap != null) {
@@ -225,12 +205,9 @@ class _SelectionCanvasState extends State<SelectionCanvas>
   void _onScaleStart(ScaleStartDetails details) {
     _lastFocalPoint = details.focalPoint;
     _lastScale = _currentScale;
-
-    // Инициализируем целевые значения
     _targetScale = _currentScale;
     _targetOffset = _currentOffset;
 
-    // Масштабирование/панорамирование при 2+ пальцах или колесе мыши
     if (details.pointerCount != 1) {
       setState(() {
         _isZooming = true;
@@ -239,7 +216,6 @@ class _SelectionCanvasState extends State<SelectionCanvas>
       return;
     }
 
-    // Одиночный палец - панорамирование в режиме hand
     if (widget.currentTool == SelectionTool.hand) {
       setState(() {
         _isPanning = true;
@@ -251,7 +227,6 @@ class _SelectionCanvasState extends State<SelectionCanvas>
   void _onScaleUpdate(ScaleUpdateDetails details) {
     _currentPointerCount = details.pointerCount;
 
-    // Обновляем состояние зума
     final bool nowZooming = _currentPointerCount != 1;
     if (nowZooming != _isZooming) {
       setState(() {
@@ -262,13 +237,11 @@ class _SelectionCanvasState extends State<SelectionCanvas>
       });
     }
 
-    // При зуме отключаем автосегментацию
     if (widget.isSegmentationModeActive && _currentPointerCount != 1) {
       return;
     }
 
     if (_currentPointerCount == 1) {
-      // Одиночный палец - панорамирование
       if (_isPanning) {
         final delta = details.focalPoint - _lastFocalPoint!;
         setState(() {
@@ -277,7 +250,6 @@ class _SelectionCanvasState extends State<SelectionCanvas>
         _lastFocalPoint = details.focalPoint;
       }
     } else {
-      // Масштабирование
       _lastScale ??= _currentScale;
       _lastFocalPoint ??= details.focalPoint;
 
@@ -327,11 +299,7 @@ class _SelectionCanvasPainter extends CustomPainter {
   final Offset currentOffset;
   final bool isZooming;
   final bool isPanning;
-
-  // Кэшированные Paint объекты
-  final Paint _backgroundPaint;
-  final Paint _imagePaint;
-  final Paint _selectionOverlayPaint;
+  final double maskAnimationValue;
 
   _SelectionCanvasPainter({
     required this.image,
@@ -341,22 +309,16 @@ class _SelectionCanvasPainter extends CustomPainter {
     this.currentOffset = Offset.zero,
     this.isZooming = false,
     this.isPanning = false,
-  }) : _backgroundPaint = Paint()..color = Colors.black,
-       _imagePaint = Paint(),
-       _selectionOverlayPaint = Paint()
-         ..color = Colors.blue.withValues(alpha: 0.3)
-         ..style = PaintingStyle.fill;
+    this.maskAnimationValue = 0.0,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
-    canvas.drawRect(
-      Rect.fromLTWH(0, 0, size.width, size.height),
-      _backgroundPaint,
-    );
+    final paint = Paint()..color = Colors.black;
+    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), paint);
 
     if (image == null) return;
 
-    // Вычисляем размер изображения с сохранением пропорций
     final aspectRatio = imageSize.width / imageSize.height;
     double baseWidth, baseHeight;
 
@@ -368,43 +330,31 @@ class _SelectionCanvasPainter extends CustomPainter {
       baseHeight = baseWidth / aspectRatio;
     }
 
-    // Центр экрана
     final centerX = size.width / 2;
     final centerY = size.height / 2;
     final baseOffsetX = centerX - baseWidth / 2;
     final baseOffsetY = centerY - baseHeight / 2;
 
-    // Размер видимой части изображения при текущем зуме
     final srcWidth = imageSize.width / currentScale;
     final srcHeight = imageSize.height / currentScale;
 
-    // Позиция видимой области
     final pixelsPerImageX = srcWidth / baseWidth;
     final pixelsPerImageY = srcHeight / baseHeight;
 
-    final srcX =
-        ((imageSize.width - srcWidth) / 2 - currentOffset.dx * pixelsPerImageX)
-            .clamp(0.0, imageSize.width - srcWidth)
-            .toDouble();
-    final srcY =
-        ((imageSize.height - srcHeight) / 2 -
-                currentOffset.dy * pixelsPerImageY)
-            .clamp(0.0, imageSize.height - srcHeight)
-            .toDouble();
+    final srcX = ((imageSize.width - srcWidth) / 2 - currentOffset.dx * pixelsPerImageX).clamp(0.0, imageSize.width - srcWidth).toDouble();
+    final srcY = ((imageSize.height - srcHeight) / 2 - currentOffset.dy * pixelsPerImageY).clamp(0.0, imageSize.height - srcHeight).toDouble();
 
-    // Рисуем изображение с зумом
+    final imagePaint = Paint();
     canvas.drawImageRect(
       image!,
-      Rect.fromLTWH(srcX.toDouble(), srcY.toDouble(), srcWidth, srcHeight),
+      Rect.fromLTWH(srcX, srcY, srcWidth, srcHeight),
       Rect.fromLTWH(baseOffsetX, baseOffsetY, baseWidth, baseHeight),
-      _imagePaint,
+      imagePaint,
     );
 
-    // Масштаб для преобразования координат
     final scaleX = baseWidth / srcWidth;
     final scaleY = baseHeight / srcHeight;
 
-    // Рисуем маску выделения (всегда, с учётом зума и панорамирования)
     if (selectionMask.isNotEmpty) {
       _drawSelectionOverlay(
         canvas,
@@ -439,19 +389,18 @@ class _SelectionCanvasPainter extends CustomPainter {
   ) {
     final imgWidth = imageSize.width.toInt();
     final imgHeight = imageSize.height.toInt();
-
-    // Размер видимой области в координатах изображения
     final visibleWidth = srcWidth;
     final visibleHeight = srcHeight;
 
-    // Оптимизированное рисование маски - проходим по строкам с шагом
+    final overlayPaint = Paint()
+      ..color = Colors.blue.withValues(alpha: 0.3 * (0.5 + 0.5 * maskAnimationValue))
+      ..style = PaintingStyle.fill;
+
     for (int y = 0; y < imgHeight; y += 4) {
-      // Пропускаем строки, которые находятся вне видимой области
       if (y < srcY || y >= srcY + visibleHeight) continue;
 
       int x = 0;
       while (x < imgWidth) {
-        // Пропускаем пиксели, которые находятся вне видимой области
         if (x < srcX) {
           x++;
           continue;
@@ -473,26 +422,22 @@ class _SelectionCanvasPainter extends CustomPainter {
           x++;
         }
         int endX = x - 1;
-        // Учитываем смещение видимой области (srcX, srcY) при зуме
         final screenX = offsetX + (startX - srcX) * scaleX;
         final screenY = offsetY + (y - srcY) * scaleY;
         final screenWidth = (endX - startX + 1) * scaleX;
         final screenHeight = scaleY * 4;
         canvas.drawRect(
           Rect.fromLTWH(screenX, screenY, screenWidth, screenHeight),
-          _selectionOverlayPaint,
+          overlayPaint,
         );
       }
     }
 
-    // Вертикальные полосы для лучшей видимости маски
     for (int x = 0; x < imgWidth; x += 4) {
-      // Пропускаем колонки, которые находятся вне видимой области
       if (x < srcX || x >= srcX + visibleWidth) continue;
 
       int y = 0;
       while (y < imgHeight) {
-        // Пропускаем пиксели, которые находятся вне видимой области
         if (y < srcY) {
           y++;
           continue;
@@ -514,14 +459,13 @@ class _SelectionCanvasPainter extends CustomPainter {
           y++;
         }
         int endY = y - 1;
-        // Учитываем смещение видимой области (srcX, srcY) при зуме
         final screenX = offsetX + (x - srcX) * scaleX;
         final screenY = offsetY + (startY - srcY) * scaleY;
         final screenWidth = scaleX * 4;
         final screenHeight = (endY - startY + 1) * scaleY;
         canvas.drawRect(
           Rect.fromLTWH(screenX, screenY, screenWidth, screenHeight),
-          _selectionOverlayPaint,
+          overlayPaint,
         );
       }
     }
@@ -535,6 +479,7 @@ class _SelectionCanvasPainter extends CustomPainter {
         currentScale != oldDelegate.currentScale ||
         currentOffset != oldDelegate.currentOffset ||
         isZooming != oldDelegate.isZooming ||
-        isPanning != oldDelegate.isPanning;
+        isPanning != oldDelegate.isPanning ||
+        maskAnimationValue != oldDelegate.maskAnimationValue;
   }
 }

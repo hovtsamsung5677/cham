@@ -23,13 +23,7 @@ class _CameraPageState extends State<CameraPage> {
   int _currentCameraIndex = 0;
   double _selectedZoom = 1.5;
   final List<double> _zoomLevels = [1.0, 1.5, 2, 4];
-  bool _isFlashlightOn = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _initializeCamera();
-  }
+bool _isFlashOn = false;
 
   Future<void> _initializeCamera([int? cameraIndex]) async {
     PermissionStatus cameraStatus = await Permission.camera.request();
@@ -94,16 +88,16 @@ class _CameraPageState extends State<CameraPage> {
       return;
     }
 
-    // Отключаем фонарик перед переключением камеры
-    if (_isFlashlightOn &&
+    // Отключаем вспышку перед переключением камеры
+    if (_isFlashOn &&
         _cameraController != null &&
         _cameraController!.value.isInitialized) {
       try {
         await _cameraController!.setFlashMode(FlashMode.off);
-        _isFlashlightOn = false;
+        _isFlashOn = false;
         if (mounted) setState(() {});
       } catch (e) {
-        debugPrint('Error turning off flashlight: $e');
+        debugPrint('Error turning off flash: $e');
       }
     }
 
@@ -117,12 +111,6 @@ class _CameraPageState extends State<CameraPage> {
     }
 
     try {
-      // Отключаем фонарик перед съемкой
-      if (_isFlashlightOn) {
-        await _cameraController!.setFlashMode(FlashMode.off);
-        _isFlashlightOn = false;
-      }
-
       final XFile image = await _cameraController!.takePicture();
       final bytes = await image.readAsBytes();
 
@@ -153,35 +141,36 @@ class _CameraPageState extends State<CameraPage> {
     }
   }
 
-  Future<void> _toggleFlashlight() async {
+  Future<void> _toggleFlash() async {
     if (_cameraController == null || !_cameraController!.value.isInitialized) {
       return;
     }
 
     try {
-      // Check if torch is available
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) return;
-
-      // Toggle flashlight
-      _isFlashlightOn = !_isFlashlightOn;
+      _isFlashOn = !_isFlashOn;
       await _cameraController!.setFlashMode(
-        _isFlashlightOn ? FlashMode.torch : FlashMode.off,
+        _isFlashOn ? FlashMode.always : FlashMode.off,
       );
       setState(() {});
     } catch (e) {
-      debugPrint('Error toggling flashlight: $e');
+      debugPrint('Error toggling flash: $e');
     }
   }
 
   @override
+  void initState() {
+    super.initState();
+    _initializeCamera();
+  }
+
+  @override
   void dispose() {
-    // Отключаем фонарик перед освобождением ресурсов
-    if (_isFlashlightOn && _cameraController != null) {
+    // Отключаем вспышку перед освобождением ресурсов
+    if (_isFlashOn && _cameraController != null) {
       try {
         _cameraController!.setFlashMode(FlashMode.off);
       } catch (e) {
-        debugPrint('Error turning off flashlight in dispose: $e');
+        debugPrint('Error turning off flash in dispose: $e');
       }
     }
     _cameraController?.dispose();
@@ -191,13 +180,13 @@ class _CameraPageState extends State<CameraPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: const Color(0xFF2C2C2E),
       body: Stack(
         children: [
           Positioned.fill(
             child: _isCameraInitialized && _cameraController != null
                 ? CameraPreview(_cameraController!)
-                : Container(color: Colors.black87),
+                : Container(color: const Color(0xFF2C2C2E)),
           ),
           Center(
             child: SizedBox(
@@ -215,16 +204,16 @@ class _CameraPageState extends State<CameraPage> {
                   _TopButton(
                     iconPath: 'assets/icons/Group_2977.png',
                     onTap: () async {
-                      // Отключаем фонарик перед выходом
-                      if (_isFlashlightOn &&
+                      // Отключаем вспышку перед выходом
+                      if (_isFlashOn &&
                           _cameraController != null &&
                           _cameraController!.value.isInitialized) {
                         try {
                           await _cameraController!.setFlashMode(FlashMode.off);
-                          _isFlashlightOn = false;
+                          _isFlashOn = false;
                           if (mounted) setState(() {});
                         } catch (e) {
-                          debugPrint('Error turning off flashlight: $e');
+                          debugPrint('Error turning off flash: $e');
                         }
                       }
                       if (Navigator.canPop(context)) {
@@ -239,12 +228,8 @@ class _CameraPageState extends State<CameraPage> {
                   ),
                   _TopButton(
                     iconPath: 'assets/icons/Group_2976.png',
-                    onTap: _toggleFlashlight,
-                    isActive: _isFlashlightOn, // Передаём состояние фонарика
-                  ),
-                  _TopButton(
-                    iconPath: 'assets/icons/Group_2979.png',
-                    onTap: _switchCamera,
+                    onTap: _toggleFlash,
+                    isActive: _isFlashOn,
                   ),
                 ],
               ),
@@ -253,7 +238,7 @@ class _CameraPageState extends State<CameraPage> {
           Align(
             alignment: Alignment.bottomCenter,
             child: Container(
-              color: Colors.black,
+              color: const Color(0xFF2C2C2E),
               padding: const EdgeInsets.only(bottom: 32, top: 16),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -366,12 +351,12 @@ class _CameraPageState extends State<CameraPage> {
     }
 
     try {
-      // Отключаем фонарик перед открытием галереи
-      if (_isFlashlightOn &&
+      // Отключаем вспышку перед открытием галереи
+      if (_isFlashOn &&
           _cameraController != null &&
           _cameraController!.value.isInitialized) {
         await _cameraController!.setFlashMode(FlashMode.off);
-        _isFlashlightOn = false;
+        _isFlashOn = false;
         if (mounted) setState(() {});
       }
 

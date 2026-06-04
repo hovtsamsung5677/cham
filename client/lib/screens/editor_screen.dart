@@ -63,7 +63,7 @@ class _EditorScreenState extends State<EditorScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: const Color(0xFF2C2C2E),
       body: Stack(
         children: [
           // Canvas area — isolated rebuild scope via RepaintBoundary
@@ -72,6 +72,9 @@ class _EditorScreenState extends State<EditorScreen>
             child: Consumer<AppState>(
               builder: (context, appState, child) {
                 final imageBytes = appState.capturedImage;
+                final previewBytes = appState.previewImage;
+                final displayBytes = previewBytes ?? imageBytes;
+                
                 if (imageBytes == null) {
                   return const _EmptyCanvasPlaceholder();
                 }
@@ -80,8 +83,8 @@ class _EditorScreenState extends State<EditorScreen>
                     cursor: SystemMouseCursors.basic,
                     child: SelectionCanvas(
                       key: const ValueKey('selection_canvas'),
-                      imageBytes: imageBytes,
-                      selectionMask: appState.selectionMask,
+                      imageBytes: displayBytes!,
+                      selectionMask: (appState.isPreviewMode && appState.previewImage != null) ? Uint8List(0) : appState.selectionMask,
                       currentTool: _selectedTool,
                       brushSize: _brushSize,
                       lassoPoints: const [],
@@ -111,7 +114,7 @@ class _EditorScreenState extends State<EditorScreen>
             ),
           ),
 
-          // Top toolbar — extracted to own widget to avoid canvas rebuilds
+// Top toolbar — extracted to own widget to avoid canvas rebuilds
           _EditorTopToolbar(
             onBackToCamera: () => _onBackToCamera(context),
             onUndo: () => context.read<AppState>().undo(),
@@ -202,15 +205,24 @@ class _EditorScreenState extends State<EditorScreen>
 
   Widget _buildAutoSegmentationFAB() {
     final bool isActive = _isSegmentationModeActive;
-    return ScaleTransition(
-      scale: _fabPulseAnimation,
+
+    return AnimatedBuilder(
+      animation: _fabPulseAnimation,
+      builder: (context, child) {
+        return Transform.scale(
+          scale: _fabPulseAnimation.value,
+          child: child,
+        );
+      },
       child: GestureDetector(
         onTap: () {
           setState(() {
             _isSegmentationModeActive = !_isSegmentationModeActive;
           });
         },
-        child: Container(
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOutBack,
           width: 68,
           height: 68,
           decoration: BoxDecoration(
@@ -226,12 +238,20 @@ class _EditorScreenState extends State<EditorScreen>
                   ]
                 : [],
           ),
-          child: Center(
-            child: Image.asset(
-              'assets/icons/Hand Cursor.png',
-              width: 32,
-              height: 32,
-              color: isActive ? Colors.white : Colors.white70,
+          child: TweenAnimationBuilder<double>(
+            duration: const Duration(milliseconds: 200),
+            tween: Tween(begin: 0.0, end: 1.0),
+            curve: Curves.easeOut,
+            builder: (context, value, child) {
+              return Opacity(opacity: value, child: child);
+            },
+            child: Center(
+              child: Image.asset(
+                'assets/icons/Hand Cursor.png',
+                width: 32,
+                height: 32,
+                color: isActive ? Colors.white : Colors.white70,
+              ),
             ),
           ),
         ),
@@ -541,24 +561,110 @@ class _EditorScreenState extends State<EditorScreen>
 
   void _showColorPicker(BuildContext context) async {
     final appState = context.read<AppState>();
-    final result = await Navigator.push(
+    await Navigator.push(
       context,
-      AppTransitions.slideRoute(
-        ColorPickerScreen(initialColor: appState.selectedColor),
-        direction: SlideDirection.up,
+      AppTransitions.fadeRoute(
+        ColorPickerScreen(
+          initialColor: appState.selectedColor,
+          onColorChanged: (color) {
+            appState.setSelectedColor(color);
+            _applyLiveRecoloring(context, color);
+          },
+        ),
       ),
     );
-    if (!mounted) return;
-    if (result != null) appState.setSelectedColor(result);
+    if (mounted && appState.isPreviewMode && appState.previewImage == null) {
+      appState.togglePreviewMode();
+    }
+  }
+
+  Future<void> _applyLiveRecoloring(BuildContext context, Color color) async {
+    final appState = context.read<AppState>();
+    final imageBytes = appState.capturedImage;
+    final mask = appState.selectionMask;
+
+    if (imageBytes == null || mask.isEmpty || !mask.any((m) => m == 1)) {
+      return;
+    }
+
+    try {
+      final codec = await ui.instantiateImageCodec(imageBytes);
+      final frame = await codec.getNextFrame();
+      final width = frame.image.width;
+      final height = frame.image.height;
+
+      final r = (color.r * 255.0).round().clamp(0, 255);
+      final g = (color.g * 255.0).round().clamp(0, 255);
+      final b = (color.b * 255.0).round().clamp(0, 255);
+
+      final analysisResult = await _analyzeSelectionBrightness();
+
+      if (analysisResult == null) return;
+
+      final dominantType = analysisResult['dominantType'] as String;
+      final meanR = analysisResult['meanR'] as int;
+      final meanG = analysisResult['meanG'] as int;
+      final meanB = analysisResult['meanB'] as int;
+      final colorThreshold = analysisResult['colorThreshold'] as int;
+
+      final useScreenFilter = dominantType == 'dark';
+      final useOverlay = dominantType == 'bright' || dominantType == 'medium' || dominantType == 'mixed';
+
+      Uint8List? textureBytes;
+      if (appState.selectedWoodTexture != null) {
+        try {
+          final byteData = await rootBundle.load('assets/textures/${appState.selectedWoodTexture}.png');
+          textureBytes = byteData.buffer.asUint8List();
+        } catch (e) {
+          debugPrint('Error loading wood texture: $e');
+        }
+      } else if (appState.selectedMetalTexture != null) {
+        try {
+          final byteData = await rootBundle.load('assets/textures/${appState.selectedMetalTexture}.png');
+          textureBytes = byteData.buffer.asUint8List();
+        } catch (e) {
+          debugPrint('Error loading metal texture: $e');
+        }
+      }
+
+      final result = await compute(
+        _recolorIsolateFunction,
+        _RecolorParams(
+          imageBytes: imageBytes,
+          width: width,
+          height: height,
+          mask: mask,
+          targetRed: r,
+          targetGreen: g,
+          targetBlue: b,
+          woodTextureBytes: textureBytes,
+          useScreenFilter: useScreenFilter,
+          useOverlay: useOverlay,
+          meanR: meanR,
+          meanG: meanG,
+          meanB: meanB,
+          colorThreshold: colorThreshold,
+          blendFactor: 1.0,
+        ),
+      );
+
+      if (mounted) {
+        appState.setPreviewImage(result);
+        if (!appState.isPreviewMode) {
+          appState.togglePreviewMode();
+        }
+      }
+    } catch (e) {
+      debugPrint('Live recolor error: $e');
+    }
   }
 
   void _showColorPalette(BuildContext context) async {
     final appState = context.read<AppState>();
     final result = await Navigator.push(
       context,
-      AppTransitions.slideRoute(
+      AppTransitions.fadeRoute(
         const ColorPaletteScreen(),
-        direction: SlideDirection.up,
       ),
     );
     if (!mounted) return;
@@ -727,7 +833,7 @@ class _EmptyCanvasPlaceholder extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: const Color(0xFF1A1008),
+      color: const Color(0xFF2C2C2E),
       child: const Center(
         child: Icon(Icons.image, color: Colors.white24, size: 80),
       ),
@@ -771,14 +877,9 @@ class _EditorTopToolbar extends StatelessWidget {
 /// Icon button for the top toolbar
 class _TopIconBtn extends StatelessWidget {
   final String assetPath;
-  final bool isSelected;
   final VoidCallback onTap;
 
-  const _TopIconBtn(
-    this.assetPath, {
-    this.isSelected = false,
-    required this.onTap,
-  });
+  const _TopIconBtn(this.assetPath, {required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -787,7 +888,7 @@ class _TopIconBtn extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
-          color: isSelected ? Colors.white24 : Colors.transparent,
+          color: Colors.transparent,
           shape: BoxShape.circle,
         ),
         child: Image.asset(

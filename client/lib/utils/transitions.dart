@@ -174,3 +174,104 @@ class AppTransitions {
 }
 
 enum SlideDirection { right, left, up, down }
+
+/// Smooth fade + scale transition for widgets appearing/disappearing
+class SmoothAnimatedWidget extends StatelessWidget {
+  final bool visible;
+  final Widget child;
+  final Duration duration;
+  final double beginScale;
+  final double endScale;
+  final Curve curve;
+
+  const SmoothAnimatedWidget({
+    super.key,
+    required this.visible,
+    required this.child,
+    this.duration = const Duration(milliseconds: 350),
+    this.beginScale = 0.8,
+    this.endScale = 1.0,
+    this.curve = Curves.easeOutCubic,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: duration,
+      switchInCurve: curve,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, animation) {
+        return ScaleTransition(
+          scale: animation,
+          child: FadeTransition(opacity: animation, child: child),
+        );
+      },
+      child: visible
+          ? KeyedSubtree(key: const ValueKey('visible'), child: child)
+          : const SizedBox.shrink(key: ValueKey('hidden')),
+    );
+  }
+}
+
+/// Animated slide transition for widgets
+class SlideAnimatedWidget extends StatelessWidget {
+  final bool visible;
+  final Widget child;
+  final Duration duration;
+  final Offset offset;
+
+  const SlideAnimatedWidget({
+    super.key,
+    required this.visible,
+    required this.child,
+    this.duration = const Duration(milliseconds: 350),
+    this.offset = const Offset(0, 1),
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: duration,
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, animation) {
+        return SlideTransition(
+          position: Tween<Offset>(begin: offset, end: Offset.zero).animate(animation),
+          child: FadeTransition(opacity: animation, child: child),
+        );
+      },
+      child: visible
+          ? KeyedSubtree(key: const ValueKey('visible'), child: child)
+          : const SizedBox.shrink(key: ValueKey('hidden')),
+    );
+  }
+}
+
+/// Animated fade transition for widgets
+class FadeAnimatedWidget extends StatelessWidget {
+  final bool visible;
+  final Widget child;
+  final Duration duration;
+
+  const FadeAnimatedWidget({
+    super.key,
+    required this.visible,
+    required this.child,
+    this.duration = const Duration(milliseconds: 350),
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: duration,
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeIn,
+      transitionBuilder: (child, animation) {
+        return FadeTransition(opacity: animation, child: child);
+      },
+      child: visible
+          ? KeyedSubtree(key: const ValueKey('visible'), child: child)
+          : const SizedBox.shrink(key: ValueKey('hidden')),
+    );
+  }
+}

@@ -12,6 +12,7 @@ import '../services/image_processing_service.dart';
 import '../widgets/selection_canvas.dart';
 import '../widgets/color_picker_dialog.dart';
 import '../widgets/tool_bar.dart';
+import '../utils/transitions.dart';
 
 /// Main home screen with camera and editor
 class HomeScreen extends StatefulWidget {
@@ -382,13 +383,25 @@ class _HomeScreenState extends State<HomeScreen> {
 
         // Loading screen (same as splash screen during processing)
         if (appState.isLoading)
-          Container(
-            color: Theme.of(context).colorScheme.background,
-            child: Center(
-              child: Image.asset(
-                'assets/logo/logotip.png',
-                width: 200,
-                height: 200,
+          FadeAnimatedWidget(
+            visible: true,
+            duration: const Duration(milliseconds: 200),
+            child: Container(
+              color: Theme.of(context).colorScheme.background,
+              child: Center(
+                child: TweenAnimationBuilder<double>(
+                  duration: const Duration(milliseconds: 800),
+                  tween: Tween(begin: 0.8, end: 1.0),
+                  curve: Curves.easeOut,
+                  builder: (context, value, child) {
+                    return Opacity(opacity: value, child: child);
+                  },
+                  child: Image.asset(
+                    'assets/logo/logotip.png',
+                    width: 200,
+                    height: 200,
+                  ),
+                ),
               ),
             ),
           ),

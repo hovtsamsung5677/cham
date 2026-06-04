@@ -50,7 +50,7 @@ class _ColorPaletteScreenState extends State<ColorPaletteScreen> {
 
   // Metal tint colors (using texture image) - realistic metal colors
   final List<Color> metalTintColors = [
-    const Color(0xFFFFB900), // gold - golden
+    const Color(0xFFEBB014), // gold - golden
     const Color(0xFFC0C0C0), // silver - silver
     const Color(0xFF984D25), // bronze - bronze
   ];
