@@ -76,7 +76,9 @@ async def segment_proxy_endpoint(
     point_y: float = Form(...,
                           description="Координата Y точки клика (пиксели)"),
     point_label: int = Form(
-        1, description="Метка точки: 1 - foreground, 0 - background")
+        1, description="Метка точки: 1 - foreground, 0 - background"),
+    min_component_area: int = Form(
+        200, description="Минимальная площадь компонента (пиксели) для сохранения в маске")
 ):
     """
     Прокси-эндпоинт для пересылки запросов к segment-server.
@@ -91,7 +93,7 @@ async def segment_proxy_endpoint(
         files = {"image": (image.filename, image_bytes,
                            image.content_type or "application/octet-stream")}
         data = {"point_x": str(point_x), "point_y": str(
-            point_y), "point_label": str(point_label)}
+            point_y), "point_label": str(point_label), "min_component_area": str(min_component_area)}
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(segment_server_url, files=files, data=data)
@@ -112,7 +114,9 @@ async def segment_endpoint(
     point_y: float = Form(...,
                           description="Координата Y точки клика (пиксели)"),
     point_label: int = Form(
-        1, description="Метка точки: 1 - foreground, 0 - background")
+        1, description="Метка точки: 1 - foreground, 0 - background"),
+    min_component_area: int = Form(
+        200, description="Минимальная площадь компонента (пиксели) для сохранения в маске")
 ):
     """
     Сегментация изображения по точке.
@@ -185,7 +189,8 @@ async def segment_endpoint(
                 image_array=image_array,
                 point_x=point_x,
                 point_y=point_y,
-                point_label=point_label
+                point_label=point_label,
+                min_component_area=min_component_area
             )
             print(
                 f"Сегментация завершена. Маска: shape={mask.shape}, bbox={bbox}")

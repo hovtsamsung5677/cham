@@ -8,6 +8,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional, Tuple
 
+import cv2
 import numpy as np
 import torch
 from PIL import Image
@@ -154,7 +155,7 @@ def preprocess_image(image_bytes: bytes) -> np.ndarray:
 def rle_encode(mask: np.ndarray) -> dict:
     """
     Кодирует бинарную маску в RLE (Run-Length Encoding) в формате COCO.
-    counts всегда начинается с фона (0), затем объект (1), чередуясь.
+    Оптимизированная векторизованная реализация на numpy.
 
     Args:
         mask: Бинарная маска (H, W) или (H, W, 1)
@@ -165,25 +166,21 @@ def rle_encode(mask: np.ndarray) -> dict:
     if mask.ndim == 3:
         mask = mask.squeeze(-1)
 
-    # Используем row-major (C-style) порядок для совместимости с Dart/Flutter
-    flat_mask = mask.flatten(order="C").astype(np.int8)
+    flat_mask = mask.flatten(order="C").astype(np.uint8)
 
-    counts = []
-    current_val = 0  # начинаем с фона (0)
-    current_count = 0
+    if flat_mask.size == 0:
+        return {"counts": [0], "size": [int(mask.shape[0]), int(mask.shape[1])]}
 
-    for pixel in flat_mask:
-        if pixel == current_val:
-            current_count += 1
-        else:
-            counts.append(current_count)
-            current_count = 1
-            current_val = pixel
+    prepend_val = 0 if flat_mask[0] == 1 else 1
+    changes = np.diff(flat_mask, prepend=prepend_val)
+    segment_starts = np.where(changes != 0)[0]
+    counts = np.diff(np.append(segment_starts, len(flat_mask)))
 
-    counts.append(current_count)
+    if flat_mask[0] == 1:
+        counts = np.concatenate([[0], counts])
 
     return {
-        "counts": [int(c) for c in counts],
+        "counts": counts.tolist(),
         "size": [int(mask.shape[0]), int(mask.shape[1])]
     }
 
@@ -218,12 +215,60 @@ def rle_decode(rle: dict) -> np.ndarray:
     return mask.reshape(h, w, order="C")
 
 
+def postprocess_mask(
+    mask: np.ndarray,
+    min_component_area: int = 200,
+    dilate_kernel: int = 3
+) -> np.ndarray:
+    """
+    1. Дилатация — включить освещённые «ошпареные» участки вокруг объекта
+    2. Морфологическое закрытие — заполнить внутренние разрывы от света
+    3. Удаление мелких connected components (дверные ручки и т.п.)
+
+    Args:
+        mask: Бинарная маска (H, W)
+        min_component_area: Минимальная площадь компонента в пикселях для сохранения
+        dilate_kernel: Размер ядра дилатации (0 — пропустить)
+
+    Returns:
+        np.ndarray: Обработанная бинарная маска (H, W), dtype=uint8
+    """
+    import cv2
+
+    mask_u8 = mask.astype(np.uint8)
+
+    if dilate_kernel > 0:
+        kernel = np.ones((dilate_kernel, dilate_kernel), np.uint8)
+        mask_u8 = cv2.dilate(mask_u8, kernel, iterations=1)
+
+    kernel_close = np.ones((5, 5), np.uint8)
+    mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, kernel_close)
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask_u8, connectivity=8
+    )
+    
+    if num_labels > 1:
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        keep_mask = areas >= min_component_area
+        label_indices = np.arange(1, num_labels)
+        keep_labels = label_indices[keep_mask]
+        lookup = np.zeros(num_labels, dtype=np.uint8)
+        lookup[keep_labels] = 1
+        filtered = lookup[labels]
+    else:
+        filtered = np.zeros_like(mask_u8)
+
+    return filtered
+
+
 def segment_image(
     image_array: np.ndarray,
     point_x: float,
     point_y: float,
     point_label: int = 1,
-    device: Optional[str] = None
+    device: Optional[str] = None,
+    min_component_area: int = 200
 ) -> Tuple[np.ndarray, Optional[list]]:
     """
     Выполняет сегментацию изображения по точке.
@@ -257,7 +302,12 @@ def segment_image(
 
     mask = masks[0]  # (H, W) boolean
 
-    # Вычисляем bounding box
+    mask = postprocess_mask(
+        mask,
+        min_component_area=min_component_area,
+        dilate_kernel=3
+    )
+
     if mask.any():
         y_indices, x_indices = np.where(mask)
         x_min, x_max = x_indices.min(), x_indices.max()
@@ -266,4 +316,4 @@ def segment_image(
     else:
         bbox = None
 
-    return mask.astype(np.uint8), bbox
+    return mask, bbox
