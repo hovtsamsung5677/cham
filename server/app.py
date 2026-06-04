@@ -2,7 +2,9 @@
 FastAPI сервер для сегментации объектов по одному клику с использованием MobileSAM.
 """
 
+import json
 import os
+from typing import Optional
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +15,7 @@ import traceback
 from io import BytesIO
 import httpx
 
-from segment_utils import preprocess_image, segment_image, rle_encode, load_model
+from segment_utils import preprocess_image, segment_image, rle_encode, rle_decode, load_model, multi_step_segment
 
 app = FastAPI(title="MobileSAM Segmentation API", version="1.0.0")
 
@@ -223,6 +225,126 @@ async def segment_endpoint(
             response["bbox"] = bbox
 
         print(f"Отправка ответа: success=True, size={w}x{h}")
+        return JSONResponse(content=response)
+
+    except HTTPException:
+        print(f"HTTPException: {traceback.format_exc()}")
+        raise
+    except Exception as e:
+        print(f"Неожиданная ошибка: {traceback.format_exc()}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": str(e)
+            }
+        )
+
+
+@app.post("/segment-multi")
+async def segment_multi_endpoint(
+    image: UploadFile = File(..., description="Изображение для сегментации"),
+    point_x: float = Form(...,
+                          description="Координата X точки клика (пиксели)"),
+    point_y: float = Form(...,
+                          description="Координата Y точки клика (пиксели)"),
+    point_label: int = Form(
+        1, description="Метка точки: 1 - foreground, 0 - background"),
+    min_component_area: int = Form(
+        200, description="Минимальная площадь компонента (пиксели) для сохранения в маске"),
+    color_threshold: float = Form(
+        35.0, description="Порог цветового расстояния для слияния границ (меньше = строже)"),
+    dilate_kernel: int = Form(
+        3, description="Размер ядра дилатации для постобработки"),
+    existing_mask_counts: Optional[str] = Form(
+        None, description="RLE counts существующей маски (JSON массив)"),
+    existing_mask_size: Optional[str] = Form(
+        None, description="Размер маски '[height, width]' (JSON массив)")
+):
+    """
+    Многошаговая сегментация с аккумуляцией маски.
+    Позволяет последовательно добавлять новые участки к существующей маске,
+    проверяя границы объекта и цветовую согласованность.
+    """
+    try:
+        print(f"\n--- Многошаговый запрос на сегментацию ---")
+        print(f"Файл: {image.filename}, точка: ({point_x}, {point_y})")
+
+        if not _model_loaded:
+            if _model_error:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Модель не загружена: {_model_error}"
+                )
+            else:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Модель загружается, попробуйте позже"
+                )
+
+        image_bytes = await image.read()
+        print(f"Размер изображения: {len(image_bytes)} bytes")
+
+        try:
+            image_array = preprocess_image(image_bytes)
+            h, w = image_array.shape[:2]
+            print(f"Изображение: {w}x{h}")
+        except Exception as e:
+            print(f"ОШИБКА при обработке изображения: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Не удалось обработать изображение: {str(e)}"
+            )
+
+        if not (0 <= point_x < w) or not (0 <= point_y < h):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Coordinates out of bounds. Image size: {w}x{h}, point: ({point_x}, {point_y})"
+            )
+
+        # Декодируем существующую маску, если передана
+        existing_mask = None
+        if existing_mask_counts and existing_mask_size:
+            try:
+                counts = json.loads(existing_mask_counts)
+                size = json.loads(existing_mask_size)
+                existing_mask = rle_decode({"counts": counts, "size": size})
+                print(f"Существующая маска: {existing_mask.shape}, пикселей={int(np.sum(existing_mask))}")
+            except Exception as e:
+                print(f"Предупреждение: не удалось декодировать существующую маску: {e}")
+
+        print(f"Запуск многошаговой сегментации...")
+        try:
+            mask, bbox, info = multi_step_segment(
+                image_array=image_array,
+                existing_mask=existing_mask,
+                point_x=int(point_x),
+                point_y=int(point_y),
+                point_label=point_label,
+                color_threshold=color_threshold,
+                min_component_area=min_component_area,
+                dilate_kernel=dilate_kernel
+            )
+            print(f"Сегментация завершена: {info}")
+        except Exception as e:
+            print(f"ОШИБКА при сегментации: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Ошибка сегментации: {str(e)}"
+            )
+
+        mask_rle = rle_encode(mask)
+
+        response = {
+            "success": True,
+            "mask": mask_rle,
+            "info": info,
+            "image_size": {"width": w, "height": h}
+        }
+
+        if bbox is not None:
+            response["bbox"] = bbox
+
         return JSONResponse(content=response)
 
     except HTTPException:

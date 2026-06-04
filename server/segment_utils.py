@@ -233,8 +233,6 @@ def postprocess_mask(
     Returns:
         np.ndarray: Обработанная бинарная маска (H, W), dtype=uint8
     """
-    import cv2
-
     mask_u8 = mask.astype(np.uint8)
 
     if dilate_kernel > 0:
@@ -260,6 +258,235 @@ def postprocess_mask(
         filtered = np.zeros_like(mask_u8)
 
     return filtered
+
+
+def analyze_boundary(
+    image_array: np.ndarray,
+    existing_mask: np.ndarray,
+    new_mask: np.ndarray,
+    color_threshold: float = 35.0,
+    sample_size: int = 200
+) -> dict:
+    """
+    Анализирует цветовую границу между существующей и новой маской.
+    Определяет, можно ли их слияние (мягкая граница - один объект, жёсткая - разные объекты).
+
+    Args:
+        image_array: RGB изображение (H, W, 3)
+        existing_mask: Существующая маска (H, W)
+        new_mask: Новая маска (H, W)
+        color_threshold: Порог цветового расстояния для "мягкой" границы
+        sample_size: Размер выборки для анализа (ограничение для производительности)
+
+    Returns:
+        dict: Метрики границы и флаг can_merge
+    """
+    existing_u8 = existing_mask.astype(np.uint8)
+    new_u8 = new_mask.astype(np.uint8)
+
+    kernel = np.ones((3, 3), np.uint8)
+
+    # Граница existing (внешние пиксели вокруг маски)
+    dilated_existing = cv2.dilate(existing_u8, kernel, iterations=1)
+    boundary_existing = (dilated_existing & (~existing_u8)).astype(bool)
+
+    # Пиксели new_only, которые соприкасаются с границей existing
+    new_only = (new_u8 & (~existing_u8)).astype(bool)
+    dilated_new_only = cv2.dilate(new_only.astype(np.uint8), kernel, iterations=1)
+    contact = boundary_existing & dilated_new_only
+
+    if not contact.any():
+        return {
+            "can_merge": True,
+            "reason": "no_contact",
+            "mean_color_distance": 0.0,
+            "contact_pixels": 0
+        }
+
+    contact_coords = np.argwhere(contact)
+    new_only_coords = np.argwhere(new_only)
+
+    if len(new_only_coords) == 0 or len(contact_coords) == 0:
+        return {
+            "can_merge": True,
+            "reason": "empty_coords",
+            "mean_color_distance": 0.0,
+            "contact_pixels": 0
+        }
+
+    # Ограничиваем размер выборки для скорости
+    sample_size = min(sample_size, len(contact_coords), len(new_only_coords))
+    if len(contact_coords) > sample_size:
+        idx = np.random.choice(len(contact_coords), sample_size, replace=False)
+        contact_coords = contact_coords[idx]
+    if len(new_only_coords) > sample_size:
+        idx = np.random.choice(len(new_only_coords), sample_size, replace=False)
+        new_only_coords = new_only_coords[idx]
+
+    # Находим цвета у граничителей
+    boundary_colors = image_array[contact_coords[:, 0], contact_coords[:, 1]].astype(np.float32)
+
+    # Находим ближайшие цвета в new_only к каждому граничителю
+    nearest_new_colors = []
+    for bc in contact_coords:
+        dists = np.sum((new_only_coords - bc) ** 2, axis=1)
+        nearest_idx = np.argmin(dists)
+        nearest_new_colors.append(image_array[new_only_coords[nearest_idx, 0], new_only_coords[nearest_idx, 1]])
+
+    new_colors = np.array(nearest_new_colors, dtype=np.float32)
+
+    # Вычисляем цветовое расстояние
+    color_distances = np.linalg.norm(boundary_colors - new_colors, axis=1)
+    mean_dist = float(np.mean(color_distances))
+
+    return {
+        "can_merge": mean_dist < color_threshold,
+        "reason": "soft_boundary" if mean_dist < color_threshold else "hard_boundary",
+        "mean_color_distance": mean_dist,
+        "contact_pixels": int(len(contact_coords))
+    }
+
+
+def multi_step_segment(
+    image_array: np.ndarray,
+    existing_mask: Optional[np.ndarray],
+    point_x: int,
+    point_y: int,
+    point_label: int = 1,
+    color_threshold: float = 35.0,
+    min_component_area: int = 200,
+    dilate_kernel: int = 3,
+    device: Optional[str] = None
+) -> Tuple[np.ndarray, Optional[list], dict]:
+    """
+    Многошаговая сегментация с умным расширением маски.
+
+    Если точка клика внутри существующей маски: пытается расширить маску.
+    Если точка снаружи: проверяет возможность присоединения.
+    При жёсткой границе (разный объект) не расширяет, а ограничивает.
+
+    Args:
+        image_array: RGB изображение (H, W, 3)
+        existing_mask: Текущая аккумулированная маска (H, W) или None
+        point_x, point_y: Координаты клика
+        point_label: Метка точки (1 foreground, 0 background)
+        color_threshold: Порог цветового расстояния для слияния
+        min_component_area: Мин. площадь компонента при постобработке
+        dilate_kernel: Размер ядра дилатации
+        device: Устройство для инференса
+
+    Returns:
+        Tuple[маска, bbox, info_dict]
+    """
+    h, w = image_array.shape[:2]
+
+    predictor = load_model(device=device)
+    predictor.set_image(image_array)
+
+    input_point = np.array([[point_x, point_y]])
+    input_label = np.array([point_label])
+
+    masks, scores, logits = predictor.predict(
+        point_coords=input_point,
+        point_labels=input_label,
+        multimask_output=False
+    )
+
+    new_mask = masks[0].astype(np.uint8)
+
+    # Начальная информация о действии
+    info = {
+        "point_inside": False,
+        "action": "initial",
+        "new_pixels": int(np.sum(new_mask)),
+        "merged_pixels": int(np.sum(new_mask))
+    }
+
+    # Если нет существующей маски - возвращаем новую
+    if existing_mask is None or not existing_mask.any():
+        result = postprocess_mask(new_mask, min_component_area, dilate_kernel)
+        if result.any():
+            y_idx, x_idx = np.where(result)
+            bbox = [int(x_idx.min()), int(y_idx.min()), int(x_idx.max()), int(y_idx.max())]
+        else:
+            bbox = None
+        info["action"] = "initial_mask"
+        return result, bbox, info
+
+    # Проверка совпадения размеров
+    if existing_mask.shape != new_mask.shape:
+        raise ValueError(
+            f"Mask size mismatch: existing {existing_mask.shape} vs new {new_mask.shape}"
+        )
+
+    existing_mask_u8 = existing_mask.astype(np.uint8)
+    point_inside = bool(existing_mask_u8[point_y, point_x]) if 0 <= point_y < h and 0 <= point_x < w else False
+    info["point_inside"] = point_inside
+
+    overlap = (existing_mask_u8 & new_mask).astype(bool)
+    new_only = (new_mask & (~existing_mask_u8)).astype(bool)
+
+    if point_inside:
+        # Точка внутри существующей маски - пытаемся расширить
+        if not new_only.any():
+            # Нет новых пикселей - точка полностью внутри
+            info["action"] = "fully_inside"
+            result = existing_mask_u8
+        else:
+            # Анализируем границу
+            boundary_info = analyze_boundary(
+                image_array, existing_mask_u8, new_mask, color_threshold
+            )
+
+            if boundary_info["can_merge"]:
+                # Мягкая граница - можем объединять
+                merged = (existing_mask_u8 | new_mask).astype(bool)
+                info["action"] = "expanded"
+            else:
+                # Жёсткая граница - не расширяем, оставляем старую
+                merged = existing_mask_u8.astype(bool)
+                info["action"] = "blocked_hard_boundary"
+
+            info["boundary_analysis"] = boundary_info
+            info["new_pixels"] = int(np.sum(new_only))
+            result = merged.astype(np.uint8)
+    else:
+        # Точка снаружи - проверяем возможность присоединения
+        if not overlap.any():
+            # Полное отсутствие пересечения
+            boundary_info = analyze_boundary(
+                image_array, existing_mask_u8, new_mask, color_threshold
+            )
+
+            if boundary_info["can_merge"]:
+                # Присоединяем (может быть соседний объект)
+                merged = (existing_mask_u8 | new_mask).astype(bool)
+                info["action"] = "attached_new"
+            else:
+                # Другой объект - оставляем текущую маску
+                merged = existing_mask_u8.astype(bool)
+                info["action"] = "separate_object_ignored"
+
+            info["boundary_analysis"] = boundary_info
+            result = merged.astype(np.uint8)
+        else:
+            # Частичное пересечение
+            merged = (existing_mask_u8 | new_mask).astype(bool)
+            info["action"] = "partially_overlapped"
+            result = merged.astype(np.uint8)
+
+    # Постобработка
+    result = postprocess_mask(result, min_component_area, dilate_kernel)
+
+    if result.any():
+        y_idx, x_idx = np.where(result)
+        bbox = [int(x_idx.min()), int(y_idx.min()), int(x_idx.max()), int(y_idx.max())]
+    else:
+        bbox = None
+
+    info["merged_pixels"] = int(np.sum(result))
+
+    return result, bbox, info
 
 
 def segment_image(
