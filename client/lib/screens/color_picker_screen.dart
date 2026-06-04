@@ -59,7 +59,7 @@ class _ColorPickerScreenState extends State<ColorPickerScreen> {
 
     if (dist >= innerR && dist <= outerR) {
       final angle = math.atan2(dy, dx);
-      _updateColor(newHue: ((angle * 180 / math.pi) + 90 + 360) % 360);
+      _updateColor(newHue: ((angle * 180 / math.pi) + 360) % 360);
     } else if (dist < innerR) {
       final cos45 = math.cos(-math.pi / 4);
       final sin45 = math.sin(-math.pi / 4);
@@ -381,7 +381,7 @@ class _ColorWheelPainter extends CustomPainter {
     canvas.drawCircle(Offset(dotX, dotY), 9, Paint()..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 2.5);
 
     final ringMid = (outerR + innerR) / 2;
-    final hueAngle = (hue - 90) * math.pi / 180;
+    final hueAngle = hue * math.pi / 180;
     final hueX = cx + ringMid * math.cos(hueAngle);
     final hueY = cy + ringMid * math.sin(hueAngle);
 
