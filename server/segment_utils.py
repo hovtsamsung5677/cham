@@ -223,8 +223,8 @@ def color_flood_expand(
     kernel_size: int = 3
 ) -> np.ndarray:
     """
-    Расширяет маску только на 1-2 пикселя для захвата бликов/высвечившихся участков.
-    Строго ограничивает расширение, чтобы не захватывать отдельные объекты внутри.
+    Расширяет маску только на 1-2 пикселя для захвата бликов.
+    Не заполняет внутренние "дырки" - проверяет, что пиксель имеет доступ к фону.
     """
     mask_u8 = mask.astype(np.uint8)
     kernel = np.ones((kernel_size, kernel_size), np.uint8)
@@ -236,29 +236,42 @@ def color_flood_expand(
         if not boundary.any():
             break
 
-        by, bx = np.where(boundary > 0)
-        expanded = mask_u8.copy()
-        h, w = mask_u8.shape
-
-        # Считаем средний цвет ярких пикселей в маске (блики)
         mask_pixels = image_array[mask_u8 > 0]
         if len(mask_pixels) > 0:
             avg_color = mask_pixels.mean(axis=0)
         else:
             avg_color = np.array([128, 128, 128], dtype=np.float32)
 
+        expanded = mask_u8.copy()
+        h, w = mask_u8.shape
+
+        # Находим все пиксели границы (потенциально могут быть дырки)
+        by, bx = np.where(boundary > 0)
+        
         for y, x in zip(by, bx):
-            # Проверяем только соседей границы
-            ny, nx = y, x
-            for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                ny2, nx2 = y + dy, x + dx
-                if 0 <= ny2 < h and 0 <= nx2 < w and mask_u8[ny2, nx2] == 0:
-                    # Используем расстояние до среднего цвета маски
-                    dist = np.linalg.norm(
-                        image_array[ny2, nx2].astype(np.float32) - avg_color
-                    )
-                    if dist < color_threshold:
-                        expanded[ny2, nx2] = 1
+            # Проверяем, что пиксель на границе имеет соседский фон
+            # (если все соседи - это маска, то это дырка внутри)
+            has_bg_neighbor = False
+            neighbor_count = 0
+            for dy in [-1, 0, 1]:
+                for dx in [-1, 0, 1]:
+                    if dy == 0 and dx == 0:
+                        continue
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w:
+                        neighbor_count += 1
+                        if mask_u8[ny, nx] == 0:
+                            has_bg_neighbor = True
+                            break
+            
+            # Если есть фоновый сосед - это внешняя граница, можно расширяться
+            # Если нет - это дырка внутри, НЕ расширяем
+            if has_bg_neighbor:
+                dist = np.linalg.norm(
+                    image_array[y, x].astype(np.float32) - avg_color
+                )
+                if dist < color_threshold:
+                    expanded[y, x] = 1
 
         mask_u8 = expanded
 
@@ -271,9 +284,8 @@ def postprocess_mask(
     dilate_kernel: int = 3
 ) -> np.ndarray:
     """
-    1. Дилатация — включить освещённые «ошпареные» участки вокруг объекта
-    2. Морфологическое закрытие — заполнить внутренние разрывы от света
-    3. Удаление мелких connected components (дверные ручки и т.п.)
+    1. Удаление мелких отдельных компонентов (мелкие блики)
+    2. Дилатация — включить освещённые «ошпареные» участки вокруг объекта
 
     Args:
         mask: Бинарная маска (H, W)
@@ -285,13 +297,7 @@ def postprocess_mask(
     """
     mask_u8 = mask.astype(np.uint8)
 
-    if dilate_kernel > 0:
-        kernel = np.ones((dilate_kernel, dilate_kernel), np.uint8)
-        mask_u8 = cv2.dilate(mask_u8, kernel, iterations=1)
-
-    kernel_close = np.ones((5, 5), np.uint8)
-    mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, kernel_close)
-
+    # 1. Удаляем мелкие отдельные компоненты (мелкие блики)
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
         mask_u8, connectivity=8
     )
@@ -303,11 +309,14 @@ def postprocess_mask(
         keep_labels = label_indices[keep_mask]
         lookup = np.zeros(num_labels, dtype=np.uint8)
         lookup[keep_labels] = 1
-        filtered = lookup[labels]
-    else:
-        filtered = np.zeros_like(mask_u8)
+        mask_u8 = lookup[labels]
 
-    return filtered
+    # 2. Дилатация для захвата бликов
+    if dilate_kernel > 0 and mask_u8.any():
+        kernel = np.ones((dilate_kernel, dilate_kernel), np.uint8)
+        mask_u8 = cv2.dilate(mask_u8, kernel, iterations=1)
+
+    return mask_u8
 
 
 def analyze_boundary(
