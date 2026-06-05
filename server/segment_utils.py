@@ -218,13 +218,13 @@ def rle_decode(rle: dict) -> np.ndarray:
 def color_flood_expand(
     image_array: np.ndarray,
     mask: np.ndarray,
-    color_threshold: float = 40.0,
-    max_iterations: int = 5,
+    color_threshold: float = 25.0,
+    max_iterations: int = 2,
     kernel_size: int = 3
 ) -> np.ndarray:
     """
-    Расширяет маску, поглощая пиксели с похожим цветом на границе.
-    Эффективно захватывает блики, тени и близкие по цвету области того же объекта.
+    Расширяет маску только на 1-2 пикселя для захвата бликов/высвечившихся участков.
+    Строго ограничивает расширение, чтобы не захватывать отдельные объекты внутри.
     """
     mask_u8 = mask.astype(np.uint8)
     kernel = np.ones((kernel_size, kernel_size), np.uint8)
@@ -240,16 +240,25 @@ def color_flood_expand(
         expanded = mask_u8.copy()
         h, w = mask_u8.shape
 
+        # Считаем средний цвет ярких пикселей в маске (блики)
+        mask_pixels = image_array[mask_u8 > 0]
+        if len(mask_pixels) > 0:
+            avg_color = mask_pixels.mean(axis=0)
+        else:
+            avg_color = np.array([128, 128, 128], dtype=np.float32)
+
         for y, x in zip(by, bx):
+            # Проверяем только соседей границы
+            ny, nx = y, x
             for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                ny, nx = y + dy, x + dx
-                if 0 <= ny < h and 0 <= nx < w and mask_u8[ny, nx] == 0:
+                ny2, nx2 = y + dy, x + dx
+                if 0 <= ny2 < h and 0 <= nx2 < w and mask_u8[ny2, nx2] == 0:
+                    # Используем расстояние до среднего цвета маски
                     dist = np.linalg.norm(
-                        image_array[y, x].astype(np.float32) -
-                        image_array[ny, nx].astype(np.float32)
+                        image_array[ny2, nx2].astype(np.float32) - avg_color
                     )
                     if dist < color_threshold:
-                        expanded[ny, nx] = 1
+                        expanded[ny2, nx2] = 1
 
         mask_u8 = expanded
 
@@ -258,7 +267,7 @@ def color_flood_expand(
 
 def postprocess_mask(
     mask: np.ndarray,
-    min_component_area: int = 200,
+    min_component_area: int = 300,
     dilate_kernel: int = 3
 ) -> np.ndarray:
     """
@@ -395,7 +404,7 @@ def multi_step_segment(
     point_y: int,
     point_label: int = 1,
     color_threshold: float = 35.0,
-    min_component_area: int = 200,
+    min_component_area: int = 300,
     dilate_kernel: int = 3,
     device: Optional[str] = None
 ) -> Tuple[np.ndarray, Optional[list], dict]:
@@ -560,9 +569,9 @@ def segment_image(
     point_y: float,
     point_label: int = 1,
     device: Optional[str] = None,
-    min_component_area: int = 30,
-    dilate_kernel: int = 5,
-    expand_color_threshold: float = 40.0
+    min_component_area: int = 300,
+    dilate_kernel: int = 3,
+    expand_color_threshold: float = 25.0
 ) -> Tuple[np.ndarray, Optional[list]]:
     """
     Выполняет сегментацию изображения по точке.
@@ -573,9 +582,9 @@ def segment_image(
         point_y: Координата Y точки (пиксели)
         point_label: Метка точки (1 - foreground, 0 - background)
         device: Устройство для инференса
-        min_component_area: Мин. площадь компонента (по умолчанию 30 вместо 200)
-        dilate_kernel: Размер ядра дилатации (по умолчанию 5 вместо 3)
-        expand_color_threshold: Порог цветового расстояния для захвата бликов (по умолчанию 40)
+        min_component_area: Мин. площадь компонента (отсекает мелкие детали)
+        dilate_kernel: Размер ядра дилатации (захват бликов)
+        expand_color_threshold: Порог цветового расстояния для бликов (строже)
 
     Returns:
         Tuple[np.ndarray, Optional[list]]: (маска, bbox в формате [x1,y1,x2,y2])
@@ -602,7 +611,7 @@ def segment_image(
         image_array,
         mask,
         color_threshold=expand_color_threshold,
-        max_iterations=4,
+        max_iterations=2,
         kernel_size=3
     )
 

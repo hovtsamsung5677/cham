@@ -80,11 +80,11 @@ async def segment_proxy_endpoint(
     point_label: int = Form(
         1, description="Метка точки: 1 - foreground, 0 - background"),
     min_component_area: int = Form(
-        30, description="Минимальная площадь компонента (пиксели) для сохранения в маске"),
+        300, description="Минимальная площадь компонента (пиксели) для сохранения в маске"),
     dilate_kernel: int = Form(
-        5, description="Размер ядра дилатации для постобработки"),
+        3, description="Размер ядра дилатации для постобработки"),
     expand_color_threshold: float = Form(
-        40.0, description="Порог цветового расстояния для захвата бликов (меньше = строже)")
+        25.0, description="Порог цветового расстояния для захвата бликов")
 ):
     """
     Прокси-эндпоинт для пересылки запросов к segment-server.
@@ -128,11 +128,11 @@ async def segment_endpoint(
     point_label: int = Form(
         1, description="Метка точки: 1 - foreground, 0 - background"),
     min_component_area: int = Form(
-        30, description="Минимальная площадь компонента (пиксели) для сохранения в маске"),
+        300, description="Минимальная площадь компонента (пиксели) для сохранения в маске"),
     dilate_kernel: int = Form(
-        5, description="Размер ядра дилатации для постобработки"),
+        3, description="Размер ядра дилатации для постобработки"),
     expand_color_threshold: float = Form(
-        40.0, description="Порог цветового расстояния для захвата бликов (меньше = строже)")
+        25.0, description="Порог цветового расстояния для захвата бликов")
 ):
     """
     Сегментация изображения по точке.
@@ -267,11 +267,11 @@ async def segment_multi_endpoint(
     point_label: int = Form(
         1, description="Метка точки: 1 - foreground, 0 - background"),
     min_component_area: int = Form(
-        30, description="Минимальная площадь компонента (пиксели) для сохранения в маске"),
+        300, description="Минимальная площадь компонента (пиксели) для сохранения в маске"),
     color_threshold: float = Form(
-        60.0, description="Порог цветового расстояния для слияния границ (меньше = строже)"),
+        35.0, description="Порог цветового расстояния для слияния границ (меньше = строже)"),
     dilate_kernel: int = Form(
-        5, description="Размер ядра дилатации для постобработки"),
+        3, description="Размер ядра дилатации для постобработки"),
     existing_mask_counts: Optional[str] = Form(
         None, description="RLE counts существующей маски (JSON массив)"),
     existing_mask_size: Optional[str] = Form(

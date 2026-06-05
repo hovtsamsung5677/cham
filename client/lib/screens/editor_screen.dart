@@ -304,7 +304,7 @@ class _EditorScreenState extends State<EditorScreen>
           width: imageWidth,
           height: imageHeight,
           currentMask: mask,
-          tolerance: 40.0 / 255.0,
+          tolerance: 25.0 / 255.0,
         );
 
         // Merge with existing mask (additive mode)

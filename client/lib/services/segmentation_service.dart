@@ -35,9 +35,9 @@ class SegmentationService {
     required Offset imagePosition,
     required int imageWidth,
     required int imageHeight,
-    int minComponentArea = 30,
-    int dilateKernel = 5,
-    double expandColorThreshold = 40.0,
+    int minComponentArea = 300,
+    int dilateKernel = 3,
+    double expandColorThreshold = 25.0,
   }) async {
     try {
       final request = http.MultipartRequest(
