@@ -35,6 +35,9 @@ class SegmentationService {
     required Offset imagePosition,
     required int imageWidth,
     required int imageHeight,
+    int minComponentArea = 30,
+    int dilateKernel = 5,
+    double expandColorThreshold = 40.0,
   }) async {
     try {
       final request = http.MultipartRequest(
@@ -52,6 +55,9 @@ class SegmentationService {
       request.fields['point_x'] = imagePosition.dx.round().toString();
       request.fields['point_y'] = imagePosition.dy.round().toString();
       request.fields['point_label'] = '1';
+      request.fields['min_component_area'] = minComponentArea.toString();
+      request.fields['dilate_kernel'] = dilateKernel.toString();
+      request.fields['expand_color_threshold'] = expandColorThreshold.toString();
 
       // Add timeout of 30 seconds
       final streamedResponse = await request.send().timeout(

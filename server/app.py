@@ -15,7 +15,7 @@ import traceback
 from io import BytesIO
 import httpx
 
-from segment_utils import preprocess_image, segment_image, rle_encode, rle_decode, load_model, multi_step_segment
+from segment_utils import preprocess_image, segment_image, rle_encode, rle_decode, load_model, multi_step_segment, color_flood_expand
 
 app = FastAPI(title="MobileSAM Segmentation API", version="1.0.0")
 
@@ -80,7 +80,11 @@ async def segment_proxy_endpoint(
     point_label: int = Form(
         1, description="Метка точки: 1 - foreground, 0 - background"),
     min_component_area: int = Form(
-        200, description="Минимальная площадь компонента (пиксели) для сохранения в маске")
+        30, description="Минимальная площадь компонента (пиксели) для сохранения в маске"),
+    dilate_kernel: int = Form(
+        5, description="Размер ядра дилатации для постобработки"),
+    expand_color_threshold: float = Form(
+        40.0, description="Порог цветового расстояния для захвата бликов (меньше = строже)")
 ):
     """
     Прокси-эндпоинт для пересылки запросов к segment-server.
@@ -94,8 +98,14 @@ async def segment_proxy_endpoint(
 
         files = {"image": (image.filename, image_bytes,
                            image.content_type or "application/octet-stream")}
-        data = {"point_x": str(point_x), "point_y": str(
-            point_y), "point_label": str(point_label), "min_component_area": str(min_component_area)}
+        data = {
+            "point_x": str(point_x), 
+            "point_y": str(point_y), 
+            "point_label": str(point_label), 
+            "min_component_area": str(min_component_area),
+            "dilate_kernel": str(dilate_kernel),
+            "expand_color_threshold": str(expand_color_threshold),
+        }
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(segment_server_url, files=files, data=data)
@@ -118,7 +128,11 @@ async def segment_endpoint(
     point_label: int = Form(
         1, description="Метка точки: 1 - foreground, 0 - background"),
     min_component_area: int = Form(
-        200, description="Минимальная площадь компонента (пиксели) для сохранения в маске")
+        30, description="Минимальная площадь компонента (пиксели) для сохранения в маске"),
+    dilate_kernel: int = Form(
+        5, description="Размер ядра дилатации для постобработки"),
+    expand_color_threshold: float = Form(
+        40.0, description="Порог цветового расстояния для захвата бликов (меньше = строже)")
 ):
     """
     Сегментация изображения по точке.
@@ -192,7 +206,9 @@ async def segment_endpoint(
                 point_x=point_x,
                 point_y=point_y,
                 point_label=point_label,
-                min_component_area=min_component_area
+                min_component_area=min_component_area,
+                dilate_kernel=dilate_kernel,
+                expand_color_threshold=expand_color_threshold
             )
             print(
                 f"Сегментация завершена. Маска: shape={mask.shape}, bbox={bbox}")
@@ -251,11 +267,11 @@ async def segment_multi_endpoint(
     point_label: int = Form(
         1, description="Метка точки: 1 - foreground, 0 - background"),
     min_component_area: int = Form(
-        200, description="Минимальная площадь компонента (пиксели) для сохранения в маске"),
+        30, description="Минимальная площадь компонента (пиксели) для сохранения в маске"),
     color_threshold: float = Form(
-        35.0, description="Порог цветового расстояния для слияния границ (меньше = строже)"),
+        60.0, description="Порог цветового расстояния для слияния границ (меньше = строже)"),
     dilate_kernel: int = Form(
-        3, description="Размер ядра дилатации для постобработки"),
+        5, description="Размер ядра дилатации для постобработки"),
     existing_mask_counts: Optional[str] = Form(
         None, description="RLE counts существующей маски (JSON массив)"),
     existing_mask_size: Optional[str] = Form(

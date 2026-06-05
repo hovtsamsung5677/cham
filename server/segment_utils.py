@@ -215,6 +215,47 @@ def rle_decode(rle: dict) -> np.ndarray:
     return mask.reshape(h, w, order="C")
 
 
+def color_flood_expand(
+    image_array: np.ndarray,
+    mask: np.ndarray,
+    color_threshold: float = 40.0,
+    max_iterations: int = 5,
+    kernel_size: int = 3
+) -> np.ndarray:
+    """
+    Расширяет маску, поглощая пиксели с похожим цветом на границе.
+    Эффективно захватывает блики, тени и близкие по цвету области того же объекта.
+    """
+    mask_u8 = mask.astype(np.uint8)
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+
+    for _ in range(max_iterations):
+        dilated = cv2.dilate(mask_u8, kernel, iterations=1)
+        boundary = (dilated & (~mask_u8)).astype(np.uint8)
+
+        if not boundary.any():
+            break
+
+        by, bx = np.where(boundary > 0)
+        expanded = mask_u8.copy()
+        h, w = mask_u8.shape
+
+        for y, x in zip(by, bx):
+            for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < h and 0 <= nx < w and mask_u8[ny, nx] == 0:
+                    dist = np.linalg.norm(
+                        image_array[y, x].astype(np.float32) -
+                        image_array[ny, nx].astype(np.float32)
+                    )
+                    if dist < color_threshold:
+                        expanded[ny, nx] = 1
+
+        mask_u8 = expanded
+
+    return mask_u8
+
+
 def postprocess_mask(
     mask: np.ndarray,
     min_component_area: int = 200,
@@ -394,7 +435,6 @@ def multi_step_segment(
 
     new_mask = masks[0].astype(np.uint8)
 
-    # Начальная информация о действии
     info = {
         "point_inside": False,
         "action": "initial",
@@ -402,7 +442,6 @@ def multi_step_segment(
         "merged_pixels": int(np.sum(new_mask))
     }
 
-    # Если нет существующей маски - возвращаем новую
     if existing_mask is None or not existing_mask.any():
         result = postprocess_mask(new_mask, min_component_area, dilate_kernel)
         if result.any():
@@ -413,7 +452,6 @@ def multi_step_segment(
         info["action"] = "initial_mask"
         return result, bbox, info
 
-    # Проверка совпадения размеров
     if existing_mask.shape != new_mask.shape:
         raise ValueError(
             f"Mask size mismatch: existing {existing_mask.shape} vs new {new_mask.shape}"
@@ -427,55 +465,82 @@ def multi_step_segment(
     new_only = (new_mask & (~existing_mask_u8)).astype(bool)
 
     if point_inside:
-        # Точка внутри существующей маски - пытаемся расширить
+        masks_multi, scores_multi, _ = predictor.predict(
+            point_coords=input_point,
+            point_labels=input_label,
+            multimask_output=True
+        )
+
+        best_mask = masks_multi[0]
+        best_score = scores_multi[0]
+
+        for m, s in zip(masks_multi, scores_multi):
+            overlap_pixels = int(np.sum(m & existing_mask_u8))
+            combined_score = s + overlap_pixels * 0.001
+            if combined_score > best_score:
+                best_score = combined_score
+                best_mask = m
+
+        new_mask = best_mask.astype(np.uint8)
+        overlap = (existing_mask_u8 & new_mask).astype(bool)
+        new_only = (new_mask & (~existing_mask_u8)).astype(bool)
+
         if not new_only.any():
-            # Нет новых пикселей - точка полностью внутри
-            info["action"] = "fully_inside"
-            result = existing_mask_u8
+            kernel_expand = np.ones((5, 5), np.uint8)
+            dilated_existing = cv2.dilate(existing_mask_u8, kernel_expand, iterations=1)
+            expanded_only = (dilated_existing & (~existing_mask_u8)).astype(bool)
+
+            if expanded_only.any():
+                expanded_info = analyze_boundary(
+                    image_array, existing_mask_u8, dilated_existing, color_threshold
+                )
+                if expanded_info["can_merge"]:
+                    result = dilated_existing
+                    info["action"] = "expanded_dilate"
+                else:
+                    result = existing_mask_u8
+                    info["action"] = "blocked_hard_boundary"
+                info["boundary_analysis"] = expanded_info
+            else:
+                result = existing_mask_u8
+                info["action"] = "fully_inside"
         else:
-            # Анализируем границу
             boundary_info = analyze_boundary(
                 image_array, existing_mask_u8, new_mask, color_threshold
             )
 
             if boundary_info["can_merge"]:
-                # Мягкая граница - можем объединять
                 merged = (existing_mask_u8 | new_mask).astype(bool)
                 info["action"] = "expanded"
+                result = merged.astype(np.uint8)
             else:
-                # Жёсткая граница - не расширяем, оставляем старую
                 merged = existing_mask_u8.astype(bool)
                 info["action"] = "blocked_hard_boundary"
+                result = merged.astype(np.uint8)
 
             info["boundary_analysis"] = boundary_info
             info["new_pixels"] = int(np.sum(new_only))
-            result = merged.astype(np.uint8)
     else:
-        # Точка снаружи - проверяем возможность присоединения
         if not overlap.any():
-            # Полное отсутствие пересечения
             boundary_info = analyze_boundary(
                 image_array, existing_mask_u8, new_mask, color_threshold
             )
 
             if boundary_info["can_merge"]:
-                # Присоединяем (может быть соседний объект)
                 merged = (existing_mask_u8 | new_mask).astype(bool)
                 info["action"] = "attached_new"
+                result = merged.astype(np.uint8)
             else:
-                # Другой объект - оставляем текущую маску
                 merged = existing_mask_u8.astype(bool)
                 info["action"] = "separate_object_ignored"
+                result = merged.astype(np.uint8)
 
             info["boundary_analysis"] = boundary_info
-            result = merged.astype(np.uint8)
         else:
-            # Частичное пересечение
             merged = (existing_mask_u8 | new_mask).astype(bool)
             info["action"] = "partially_overlapped"
             result = merged.astype(np.uint8)
 
-    # Постобработка
     result = postprocess_mask(result, min_component_area, dilate_kernel)
 
     if result.any():
@@ -495,7 +560,9 @@ def segment_image(
     point_y: float,
     point_label: int = 1,
     device: Optional[str] = None,
-    min_component_area: int = 200
+    min_component_area: int = 30,
+    dilate_kernel: int = 5,
+    expand_color_threshold: float = 40.0
 ) -> Tuple[np.ndarray, Optional[list]]:
     """
     Выполняет сегментацию изображения по точке.
@@ -506,33 +573,37 @@ def segment_image(
         point_y: Координата Y точки (пиксели)
         point_label: Метка точки (1 - foreground, 0 - background)
         device: Устройство для инференса
+        min_component_area: Мин. площадь компонента (по умолчанию 30 вместо 200)
+        dilate_kernel: Размер ядра дилатации (по умолчанию 5 вместо 3)
+        expand_color_threshold: Порог цветового расстояния для захвата бликов (по умолчанию 40)
 
     Returns:
         Tuple[np.ndarray, Optional[list]]: (маска, bbox в формате [x1,y1,x2,y2])
     """
-    # Загружаем модель
     predictor = load_model(device=device)
-
-    # Устанавливаем изображение
     predictor.set_image(image_array)
-
-    # Подготавливаем точки
     input_point = np.array([[point_x, point_y]])
     input_label = np.array([point_label])
-
-    # Получаем маски
     masks, scores, logits = predictor.predict(
         point_coords=input_point,
         point_labels=input_label,
-        multimask_output=False  # Возвращаем только лучшую маску
+        multimask_output=False
     )
 
-    mask = masks[0]  # (H, W) boolean
+    mask = masks[0].astype(np.uint8)
 
     mask = postprocess_mask(
         mask,
         min_component_area=min_component_area,
-        dilate_kernel=3
+        dilate_kernel=dilate_kernel
+    )
+
+    mask = color_flood_expand(
+        image_array,
+        mask,
+        color_threshold=expand_color_threshold,
+        max_iterations=4,
+        kernel_size=3
     )
 
     if mask.any():

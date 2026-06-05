@@ -295,68 +295,39 @@ class _EditorScreenState extends State<EditorScreen>
       );
 
       if (mounted && mask != null) {
-        // Получаем текущую маску (для аддитивного выделения)
+        // Get current mask for additive selection
         final currentMask = appState.selectionMask;
 
-        // Анализируем цвет выделенной области (на исходной маске от сегментации)
-        final analysis = await _analyzeSelectionBrightness(mask: mask);
+        // Expand mask to capture блики and similar-color boundary pixels
+        final expandedMask = ImageProcessingService.expandSelectionWithTolerance(
+          imageBytes: imageBytes,
+          width: imageWidth,
+          height: imageHeight,
+          currentMask: mask,
+          tolerance: 40.0 / 255.0,
+        );
 
-        if (analysis != null && mounted) {
-          // Применяем фильтрацию по цветовому расстоянию
-          final filteredMask =
-              ImageProcessingService.filterMaskByColorTolerance(
-                imageBytes: imageBytes,
-                width: imageWidth,
-                height: imageHeight,
-                currentMask: mask,
-                avgR: analysis['meanR'],
-                avgG: analysis['meanG'],
-                avgB: analysis['meanB'],
-                tolerance: analysis['colorThreshold'],
-              );
+        // Merge with existing mask (additive mode)
+        Uint8List finalMask;
+        if (currentMask.length != expandedMask.length) {
+          debugPrint(
+            'Warning: mask size mismatch current=${currentMask.length} vs expanded=${expandedMask.length}. Using expanded only.',
+          );
+          finalMask = expandedMask;
+        } else {
+          final combinedMask = Uint8List(expandedMask.length);
+          for (int i = 0; i < expandedMask.length; i++) {
+            combinedMask[i] = (expandedMask[i] == 1 || currentMask[i] == 1)
+                ? 1
+                : 0;
+          }
+          finalMask = combinedMask;
+        }
 
-          // Объединяем с существующей маской (аддитивный режим)
-          Uint8List finalMask;
-          if (currentMask.length != filteredMask.length) {
-            debugPrint(
-              'Warning: mask size mismatch current=${currentMask.length} vs filtered=${filteredMask.length}. Using filtered only.',
-            );
-            finalMask = filteredMask;
-          } else {
-            final combinedMask = Uint8List(filteredMask.length);
-            for (int i = 0; i < filteredMask.length; i++) {
-              combinedMask[i] = (filteredMask[i] == 1 || currentMask[i] == 1)
-                  ? 1
-                  : 0;
-            }
-            finalMask = combinedMask;
-          }
+        appState.setSelectionMask(finalMask);
 
-          appState.setSelectionMask(finalMask);
-
-          // Показываем красивое уведомление об успешной сегментации
-          if (mounted) {
-            _showSuccessSnackBar(context, 'Объект выделен');
-          }
-        } else if (mounted) {
-          // Если анализ не удался, всё равно устанавливаем маску (объединяя)
-          Uint8List finalMask;
-          if (currentMask.length != mask.length) {
-            debugPrint(
-              'Warning: mask size mismatch current=${currentMask.length} vs new=${mask.length}. Using new only.',
-            );
-            finalMask = mask;
-          } else {
-            final combinedMask = Uint8List(mask.length);
-            for (int i = 0; i < mask.length; i++) {
-              combinedMask[i] = (mask[i] == 1 || currentMask[i] == 1) ? 1 : 0;
-            }
-            finalMask = combinedMask;
-          }
-          appState.setSelectionMask(finalMask);
-          if (mounted) {
-            _showSuccessSnackBar(context, 'Объект выделен');
-          }
+        if (mounted) {
+          _showSuccessSnackBar(context, 'Объект выделен');
         }
       } else if (mounted) {
         ScaffoldMessenger.of(
